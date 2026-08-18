@@ -28,7 +28,7 @@ uv run streamlit run app/streamlit_app.py
 ## Layout
 
 ```
-src/traffic_anomaly/   # ingest, transform, detect, geo
+src/traffic_anomaly/   # ingest, data_validation, transform, detect, geo
 app/                    # Streamlit dashboard
 tests/
 scripts/                # data fetch helpers

@@ -1,1 +1,1 @@
-"""Clean and reshape raw sensor readings into a tidy long-format table."""
+"""Feature engineering on validated readings (rolling stats, STL decomposition prep) — runs after data_validation."""
