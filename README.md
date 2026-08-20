@@ -4,7 +4,15 @@ ETL + anomaly detection pipeline on Caltrans freeway loop-detector data (volume,
 
 ## Status
 
-Phase 1 (MVP) in progress. See `docs/plan.md` — *(not yet written)*.
+Phase 1 (MVP) in progress — active development, updated regularly.
+
+- [x] `ingest.py` — raw PeMS-BAY CSV → tidy DuckDB `readings`/`sensor_locations` tables
+- [x] `data_validation.py` — completeness, uniqueness, validity, consistency, accuracy, and timeliness checks
+- [x] `transform.py` — SQL-derived features (deltas, rolling stats, time-of-day) + per-sensor STL decomposition
+- [ ] `detect.py` — PyOD Isolation Forest + STL-residual z-score anomaly detection *(next)*
+- [ ] Streamlit dashboard (map + time-series drill-down) + deploy
+
+Validation against the PeMS-BAY bootstrap data already surfaced real findings worth noting: every sensor is missing exactly the 1-hour DST spring-forward gap (Mar 12, 2017), and ~3,090 stuck-sensor runs consistent with the benchmark's own gap-imputation method rather than genuine hardware faults.
 
 ## Data
 
