@@ -45,30 +45,52 @@ def build_iforest_anomalies(
     contamination: float = IFOREST_CONTAMINATION,
     random_state: int = 0,
 ) -> None:
-    """Fit an Isolation Forest on the multivariate feature matrix and flag outliers.
+    """Fit one Isolation Forest per sensor on its multivariate feature matrix, flagging outliers.
 
     Joins `features` (speed, delta, rolling stats, time-of-day) with `stl_components`
     (trend/seasonal/resid) so the model sees deviations that only show up in
     combination, not just a single feature crossing a threshold on its own.
     Rows with no prior reading (delta_speed IS NULL, i.e. each sensor's first row)
     are dropped rather than imputed.
+
+    Fit per sensor and written incrementally, rather than one global model over all
+    sensors at once — for two reasons, not just one. It keeps peak memory bounded to
+    a single sensor's rows instead of materializing the full ~17M-row joined matrix
+    at once (which OOM'd on this project's 7.6GB dev machine). It's also the more
+    defensible model: sensors sit on different road types with different normal speed
+    ranges, so a global model would confound "unusual for this sensor" with "just a
+    different, slower road" (this mirrors build_stl_components' existing per-sensor
+    parallel design in transform.py).
     """
+    sensor_ids = [r[0] for r in con.execute("SELECT DISTINCT sensor_id FROM features").fetchall()]
     feature_cols = ", ".join(IFOREST_FEATURES)
-    df = con.execute(f"""
-        SELECT f.sensor_id, f.ts, {feature_cols}
-        FROM features f
-        JOIN stl_components s USING (sensor_id, ts)
-        WHERE f.delta_speed IS NOT NULL
-    """).pl()
 
-    model = IForest(contamination=contamination, random_state=random_state)
-    model.fit(df.select(IFOREST_FEATURES).to_numpy())
+    con.execute("""
+        CREATE OR REPLACE TABLE iforest_anomalies (
+            sensor_id VARCHAR, ts TIMESTAMP, iforest_score DOUBLE, is_anomaly BOOLEAN
+        )
+    """)
 
-    result = df.select(["sensor_id", "ts"]).with_columns(
-        pl.Series("iforest_score", model.decision_scores_),
-        pl.Series("is_anomaly", model.labels_.astype(bool)),
-    )
-    con.execute("CREATE OR REPLACE TABLE iforest_anomalies AS SELECT * FROM result")
+    for sensor_id in sensor_ids:
+        df = con.execute(f"""
+            SELECT f.ts, {feature_cols}
+            FROM features f
+            JOIN stl_components s USING (sensor_id, ts)
+            WHERE f.sensor_id = ? AND f.delta_speed IS NOT NULL
+        """, [sensor_id]).pl()
+        if df.is_empty():
+            continue
+
+        model = IForest(contamination=contamination, random_state=random_state)
+        model.fit(df.select(IFOREST_FEATURES).to_numpy())
+
+        result = df.select("ts").with_columns(
+            pl.lit(sensor_id).alias("sensor_id"),
+            pl.Series("iforest_score", model.decision_scores_),
+            pl.Series("is_anomaly", model.labels_.astype(bool)),
+        ).select(["sensor_id", "ts", "iforest_score", "is_anomaly"])
+
+        con.execute("INSERT INTO iforest_anomalies SELECT * FROM result")
 
 
 def detection_summary(con: duckdb.DuckDBPyConnection) -> dict:

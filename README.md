@@ -1,6 +1,6 @@
 # Traffic Sensor Anomaly Detection
 
-**🚧 Work in progress — 4 of 5 pipeline stages built and tested; the dashboard is not yet implemented. See [Status](#status) below.**
+**🚧 Work in progress — all 5 pipeline stages built and tested locally; not yet deployed. See [Status](#status) below.**
 
 An ETL + anomaly detection pipeline on Caltrans freeway loop-detector data (volume, occupancy, speed). Planned end-to-end scope: sensor-level data quality flags, unsupervised anomaly detection, and a map-based dashboard for drilling into flagged sensors.
 
@@ -14,7 +14,7 @@ Phase 1 (MVP) in active development, updated regularly.
 | Data-quality validation | `data_validation.py` | ✅ done — completeness, uniqueness, validity, consistency, accuracy, and timeliness checks |
 | Feature engineering | `transform.py` | ✅ done — SQL-derived features (deltas, rolling stats, time-of-day) + per-sensor STL decomposition |
 | Anomaly detection | `detect.py` | ✅ done — PyOD Isolation Forest (multivariate) + STL-residual z-score baseline, qualitative agreement summary |
-| Dashboard | `app/streamlit_app.py` | ⬜ placeholder page only — planned: map + time-series drill-down, deployed to Streamlit Community Cloud |
+| Dashboard | `app/streamlit_app.py` | ✅ done — map, time-series drill-down, STL decomposition; not yet deployed |
 
 Validation against the PeMS-BAY bootstrap data already surfaced real findings worth noting: every sensor is missing exactly the 1-hour DST spring-forward gap (Mar 12, 2017), and ~3,090 stuck-sensor runs consistent with the benchmark's own gap-imputation method rather than genuine hardware faults.
 
@@ -34,7 +34,7 @@ DuckDB, Polars, GeoPandas, PyOD, ruptures, Streamlit, pytest. Managed with [uv](
 ```bash
 uv sync
 uv run pytest
-uv run streamlit run app/streamlit_app.py  # currently a placeholder page — see Status
+uv run streamlit run app/streamlit_app.py
 ```
 
 ## Layout
