@@ -5,19 +5,35 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 import pydeck as pdk
+import requests
 import streamlit as st
 
 from traffic_anomaly.detect import detection_summary, run_detection
 from traffic_anomaly.geo import sensor_locations_gdf
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "processed" / "traffic.duckdb"
+REMOTE_DB_URL = "https://huggingface.co/datasets/Navit6/traffic-anomaly-db/resolve/main/traffic.duckdb"
 
 st.set_page_config(page_title="Traffic Sensor Anomaly Detection", layout="wide")
 
 
+def _download_db() -> None:
+    """Fetch the prebuilt DB from Hugging Face — a fresh deploy container starts with no local copy."""
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with st.spinner("Downloading prebuilt database (~1.3GB, first load only)..."):
+        response = requests.get(REMOTE_DB_URL, stream=True, timeout=300)
+        response.raise_for_status()
+        with open(DB_PATH, "wb") as f:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                f.write(chunk)
+
+
 @st.cache_resource
 def get_connection() -> duckdb.DuckDBPyConnection:
-    """Open the pipeline's DuckDB file, building the anomaly-detection tables if they're missing."""
+    """Open the pipeline's DuckDB file, downloading it first if this container doesn't have it yet."""
+    if not DB_PATH.exists():
+        _download_db()
+
     con = duckdb.connect(str(DB_PATH))
     tables = {r[0] for r in con.execute("SHOW TABLES").fetchall()}
     if "readings" not in tables or "stl_components" not in tables:
