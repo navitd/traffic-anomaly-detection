@@ -31,6 +31,10 @@ wheels/
 # Streamlit
 .streamlit/secrets.toml
 
+# Environment / secrets
+.env
+.env.*
+
 # dbt (added in phase 2)
 target/
 dbt_packages/
