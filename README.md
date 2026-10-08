@@ -31,11 +31,18 @@ DuckDB, Polars, GeoPandas, PyOD, ruptures, Streamlit, pytest. Managed with [uv](
 
 ## Setup
 
+Create the virtual environment **outside this repository** (e.g. `~/venvs/anomaly-detection`), not as an in-repo `.venv`. If the repo lives on a Windows-mounted drive (`/mnt/c/...` under WSL), an in-repo venv's symlinks can break Windows-based copies/backups of the folder.
+
 ```bash
-uv sync
-uv run pytest
-uv run streamlit run app/streamlit_app.py
+python -m venv ~/venvs/anomaly-detection
+source ~/venvs/anomaly-detection/bin/activate
+
+uv sync --active
+pytest
+streamlit run app/streamlit_app.py
 ```
+
+`uv sync --active` installs into the currently activated venv instead of managing its own in-repo one — run it (or plain `uv sync`) without an activated venv and it will create/use an in-repo `.venv` instead. In each new terminal, re-run the `source` line before working.
 
 ## Layout
 
