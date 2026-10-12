@@ -2,11 +2,11 @@
 
 **🚧 Work in progress — all 5 pipeline stages built and tested; dashboard live at [traffic-anomaly-detection2609.streamlit.app](https://traffic-anomaly-detection2609.streamlit.app/). See [Status](#status) below.**
 
-An ETL + anomaly detection pipeline on Caltrans freeway loop-detector data (volume, occupancy, speed). Planned end-to-end scope: sensor-level data quality flags, unsupervised anomaly detection, and a map-based dashboard for drilling into flagged sensors.
+An end-to-end ETL + anomaly detection pipeline on Caltrans freeway loop-detector data: sensor-level data-quality checks, unsupervised anomaly detection (Isolation Forest + STL-residual z-scores), and a map-based dashboard for drilling into flagged sensors.
 
 ## Status
 
-Phase 1 (MVP) in active development, updated regularly.
+Phase 1 (MVP) is complete and deployed, running on the PeMS-BAY bootstrap data. Next: switch to raw Caltrans PeMS data once account access is approved.
 
 | Stage | Module | Status |
 |---|---|---|
@@ -27,7 +27,7 @@ Raw data is not committed to this repo (see `.gitignore`) — run the fetch scri
 
 ## Stack
 
-DuckDB, Polars, GeoPandas, PyOD, ruptures, Streamlit, pytest. Managed with [uv](https://docs.astral.sh/uv/).
+DuckDB, Polars, statsmodels (STL), PyOD, GeoPandas, Streamlit + pydeck, pytest. Managed with [uv](https://docs.astral.sh/uv/).
 
 ## Setup
 
@@ -43,6 +43,41 @@ streamlit run app/streamlit_app.py
 ```
 
 `uv sync --active` installs into the currently activated venv instead of managing its own in-repo one — run it (or plain `uv sync`) without an activated venv and it will create/use an in-repo `.venv` instead. In each new terminal, re-run the `source` line before working.
+
+If `data/processed/traffic.duckdb` doesn't exist, the dashboard downloads the prebuilt database (~1.3 GB) from [Hugging Face](https://huggingface.co/datasets/Navit6/traffic-anomaly-db) on first launch, so you can explore it without running the pipeline.
+
+To rebuild the database from raw data instead:
+
+```bash
+bash scripts/fetch_pems_bay.sh
+bash scripts/fetch_pems_bay_locations.sh
+```
+
+Then run the stages from a script (the STL step uses a process pool, so keep the `__main__` guard — it won't work pasted into a REPL or notebook):
+
+```python
+# build_db.py — run with: python build_db.py
+from pathlib import Path
+
+from traffic_anomaly.data_validation import run_validation
+from traffic_anomaly.detect import run_detection
+from traffic_anomaly.ingest import build_pems_bay_db
+from traffic_anomaly.transform import build_features, build_stl_components
+
+if __name__ == "__main__":
+    raw = Path("data/raw/pems_bay")
+    con = build_pems_bay_db(
+        Path("data/processed/traffic.duckdb"), raw / "vel_pems_bay.csv", raw / "sensor_locations.csv"
+    )
+    print(run_validation(con))  # data-quality report
+    build_features(con)
+    build_stl_components(con)   # per-sensor STL, in parallel
+    print(run_detection(con))   # Isolation Forest + z-score tables; returns a summary
+```
+
+## Deployment
+
+The dashboard runs on [Streamlit Community Cloud](https://traffic-anomaly-detection2609.streamlit.app/) and redeploys on every push to `master`. Cloud containers start empty, so the app fetches the prebuilt DuckDB file from the public Hugging Face dataset at startup (downloaded to a temporary file and renamed only when complete). Streamlit Cloud installs from `requirements.txt`, generated with `uv export --no-dev --no-hashes --format requirements-txt`.
 
 ## Layout
 
