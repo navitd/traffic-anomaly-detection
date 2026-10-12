@@ -20,12 +20,16 @@ st.set_page_config(page_title="Traffic Sensor Anomaly Detection", layout="wide")
 def _download_db() -> None:
     """Fetch the prebuilt DB from Hugging Face — a fresh deploy container starts with no local copy."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # Download to a sibling temp file and rename only once complete, so an interrupted
+    # download never leaves a truncated traffic.duckdb that later loads would trust.
+    part_path = DB_PATH.with_name(DB_PATH.name + ".part")
     with st.spinner("Downloading prebuilt database (~1.3GB, first load only)..."):
         response = requests.get(REMOTE_DB_URL, stream=True, timeout=300)
         response.raise_for_status()
-        with open(DB_PATH, "wb") as f:
+        with open(part_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=1024 * 1024):
                 f.write(chunk)
+        part_path.replace(DB_PATH)
 
 
 @st.cache_resource
