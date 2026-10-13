@@ -1,6 +1,6 @@
 # Traffic Sensor Anomaly Detection
 
-**🚧 Work in progress — all 5 pipeline stages built and tested; dashboard live at [traffic-anomaly-detection2609.streamlit.app](https://traffic-anomaly-detection2609.streamlit.app/). See [Status](#status) below.**
+**Phase 1 complete and deployed. [Live dashboard →](https://traffic-anomaly-detection2609.streamlit.app/)** Next: switch from the PeMS-BAY benchmark to raw Caltrans PeMS data. See [Status](#status) below.
 
 An end-to-end ETL + anomaly detection pipeline on Caltrans freeway loop-detector data: sensor-level data-quality checks, unsupervised anomaly detection (Isolation Forest + STL-residual z-scores), and a map-based dashboard for drilling into flagged sensors.
 
