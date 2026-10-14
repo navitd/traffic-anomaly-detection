@@ -13,6 +13,12 @@ from traffic_anomaly.geo import sensor_locations_gdf
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "processed" / "traffic.duckdb"
 REMOTE_DB_URL = "https://huggingface.co/datasets/Navit6/traffic-anomaly-db/resolve/main/traffic.duckdb"
+# DuckDB sizes itself from the host's RAM/cores, not the container's; cap it so the
+# app stays inside Community Cloud's limits instead of being killed and restarted
+# (a restart re-downloads the whole DB).
+DUCKDB_MEMORY_LIMIT = "512MB"
+DUCKDB_THREADS = 2
+FLAGGED_ROWS_PER_DETECTOR = 100
 
 st.set_page_config(page_title="Traffic Sensor Anomaly Detection", layout="wide")
 
@@ -39,6 +45,8 @@ def get_connection() -> duckdb.DuckDBPyConnection:
         _download_db()
 
     con = duckdb.connect(str(DB_PATH))
+    con.execute(f"SET memory_limit = '{DUCKDB_MEMORY_LIMIT}'")
+    con.execute(f"SET threads = {DUCKDB_THREADS}")
     tables = {r[0] for r in con.execute("SHOW TABLES").fetchall()}
     if "readings" not in tables or "stl_components" not in tables:
         st.error(
@@ -78,12 +86,19 @@ def load_sensor_summary(_con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
 
 
 @st.cache_data
+def load_detection_summary(_con: duckdb.DuckDBPyConnection) -> dict:
+    """Cached: the agreement counts scan all ~17M rows of both detector tables."""
+    return detection_summary(_con)
+
+
+@st.cache_data(max_entries=20)
 def load_sensor_timeseries(_con: duckdb.DuckDBPyConnection, sensor_id: str) -> pd.DataFrame:
     """Raw speed + STL components + both detectors' flags for one sensor, joined on ts."""
     return _con.execute("""
         SELECT f.ts, f.speed_mph, s.trend, s.seasonal, s.resid,
                COALESCE(z.is_anomaly, false) AS zscore_flag,
-               COALESCE(i.is_anomaly, false) AS iforest_flag
+               COALESCE(i.is_anomaly, false) AS iforest_flag,
+               i.iforest_score
         FROM features f
         JOIN stl_components s USING (sensor_id, ts)
         LEFT JOIN zscore_anomalies z USING (sensor_id, ts)
@@ -118,11 +133,50 @@ def render_map(summary: pd.DataFrame) -> None:
     ))
 
 
+FULL_RESOLUTION_MAX_DAYS = 7  # longer windows are plotted hourly to keep charts responsive
+
+
+def _hourly(df: pd.DataFrame) -> pd.DataFrame:
+    """Hourly means, except the STL residual, which keeps each hour's value farthest from
+    zero — a mean would average a short anomaly spike away."""
+    hourly = df.resample("1h").mean(numeric_only=True)
+    resid = df["resid"].resample("1h")
+    high, low = resid.max(), resid.min()
+    hourly["resid"] = high.where(high.abs() >= low.abs(), low)
+    return hourly
+
+
+def _strongest_flags(flagged: pd.DataFrame) -> pd.DataFrame:
+    """Top flags from each detector by its own strength, so neither detector crowds out the other."""
+    by_zscore = flagged[flagged["zscore_flag"]].assign(_strength=lambda d: d["resid"].abs())
+    by_iforest = flagged[flagged["iforest_flag"]].assign(_strength=lambda d: d["iforest_score"])
+    top = pd.concat([
+        by_zscore.nlargest(FLAGGED_ROWS_PER_DETECTOR, "_strength"),
+        by_iforest.nlargest(FLAGGED_ROWS_PER_DETECTOR, "_strength"),
+    ])
+    return top.drop(columns="_strength").drop_duplicates("ts").sort_values("ts")
+
+
 def render_drilldown(con: duckdb.DuckDBPyConnection, sensor_id: str) -> None:
     df = load_sensor_timeseries(con, sensor_id)
 
     st.subheader(f"Sensor {sensor_id} — speed & flagged anomalies")
-    st.line_chart(df.set_index("ts")[["speed_mph"]])
+    first_day, last_day = df["ts"].min().date(), df["ts"].max().date()
+    start, end = st.slider("Date range", first_day, last_day, (first_day, last_day))
+    df = df[(df["ts"].dt.date >= start) & (df["ts"].dt.date <= end)]
+
+    # A full sensor history is ~52k 5-minute readings per chart, which the browser
+    # redraws on every interaction; plot hourly unless the window is short.
+    if (end - start).days < FULL_RESOLUTION_MAX_DAYS:
+        chart_df = df.set_index("ts")
+        st.caption("5-minute readings.")
+    else:
+        chart_df = _hourly(df.set_index("ts"))
+        st.caption(
+            f"Hourly means (residual: each hour's most extreme value). Narrow the range "
+            f"to under {FULL_RESOLUTION_MAX_DAYS} days to see individual 5-minute readings."
+        )
+    st.line_chart(chart_df[["speed_mph"]])
 
     flagged = df[df["zscore_flag"] | df["iforest_flag"]]
     st.caption(
@@ -130,17 +184,36 @@ def render_drilldown(con: duckdb.DuckDBPyConnection, sensor_id: str) -> None:
         f"({int(df['zscore_flag'].sum())} z-score, {int(df['iforest_flag'].sum())} Isolation Forest)"
     )
     if not flagged.empty:
-        st.dataframe(
-            flagged[["ts", "speed_mph", "resid", "zscore_flag", "iforest_flag"]],
-            use_container_width=True,
+        columns = ["ts", "speed_mph", "resid", "iforest_score", "zscore_flag", "iforest_flag"]
+        shown = _strongest_flags(flagged)
+        if len(shown) < len(flagged):
+            st.caption(
+                f"Showing {len(shown)} of {len(flagged)}: the {FLAGGED_ROWS_PER_DETECTOR} strongest "
+                "flags per detector (largest |residual| for z-score, highest score for Isolation Forest)."
+            )
+        st.dataframe(shown[columns], width="stretch", hide_index=True)
+        st.download_button(
+            "Download all flagged readings (CSV)",
+            flagged[columns].to_csv(index=False),
+            file_name=f"sensor_{sensor_id}_flagged.csv",
+            mime="text/csv",
         )
 
     st.subheader("STL decomposition")
     st.caption("Plotted separately — trend, seasonal, and residual sit on very different scales.")
-    stl_df = df.set_index("ts")
-    st.line_chart(stl_df[["trend"]])
-    st.line_chart(stl_df[["seasonal"]])
-    st.line_chart(stl_df[["resid"]])
+    st.line_chart(chart_df[["trend"]])
+    st.line_chart(chart_df[["seasonal"]])
+    st.line_chart(chart_df[["resid"]])
+
+
+@st.fragment
+def render_sensor_section(con: duckdb.DuckDBPyConnection, summary: pd.DataFrame) -> None:
+    """Sensor picker + drill-down as a fragment: changing the sensor reruns only this part,
+    not the map and summary metrics above it."""
+    sensor_ids = sorted(summary["sensor_id"])
+    default_sensor = summary.sort_values("total_anomalies", ascending=False)["sensor_id"].iloc[0]
+    sensor_id = st.selectbox("Sensor", sensor_ids, index=sensor_ids.index(default_sensor))
+    render_drilldown(con, sensor_id)
 
 
 def main() -> None:
@@ -151,7 +224,7 @@ def main() -> None:
     con = get_connection().cursor()
     summary = load_sensor_summary(con)
 
-    overall = detection_summary(con)
+    overall = load_detection_summary(con)
     cols = st.columns(3)
     cols[0].metric("Z-score anomalies", overall["zscore_anomalies"])
     cols[1].metric("Isolation Forest anomalies", overall["iforest_anomalies"])
@@ -162,11 +235,7 @@ def main() -> None:
     )
 
     render_map(summary)
-
-    sensor_ids = sorted(summary["sensor_id"])
-    default_sensor = summary.sort_values("total_anomalies", ascending=False)["sensor_id"].iloc[0]
-    sensor_id = st.selectbox("Sensor", sensor_ids, index=sensor_ids.index(default_sensor))
-    render_drilldown(con, sensor_id)
+    render_sensor_section(con, summary)
 
 
 if __name__ == "__main__":
